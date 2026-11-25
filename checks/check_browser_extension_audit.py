@@ -47,6 +47,13 @@ KNOWN_RISKY_EXTENSIONS = [
 ]
 
 
+def normalize_name(name: str) -> str:
+    """Case-fold and drop trademark symbols / extra spaces so 'McAfee(R) WebAdvisor'
+    matches a whitelist entry written as 'McAfee WebAdvisor'. Still an exact-name match."""
+    cleaned = (name or "").replace("®", "").replace("™", "").replace("©", "")
+    return " ".join(cleaned.split()).casefold()
+
+
 def get_chrome_extension_dirs() -> list:
     appdata = os.environ.get("LOCALAPPDATA", "")
     bases = [
@@ -131,7 +138,7 @@ def run(config: dict) -> CheckResult:
     cfg = config.get("checks", {}).get(check_id, {})
     severity = cfg.get("severity", "MEDIUM")
     # Whitelisted extension names (exact, case-insensitive) -- add known-safe here
-    whitelist = [w.lower() for w in cfg.get("whitelist", [])]
+    whitelist = [normalize_name(w) for w in cfg.get("whitelist", [])]
 
     details = []
     issues = []
@@ -159,7 +166,7 @@ def run(config: dict) -> CheckResult:
             perms = info["permissions"] + info.get("host_permissions", [])
 
             # Skip whitelisted extensions
-            if name.lower() in whitelist:
+            if normalize_name(name) in whitelist:
                 details.append(f"  [whitelisted] {name}")
                 continue
 

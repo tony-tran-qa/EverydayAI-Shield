@@ -23,7 +23,13 @@
     "suspicious_processes": {
       "enabled": true,
       "severity": "HIGH",
-      "description": "Detects AI-tool-spawned processes with suspicious network or file behavior"
+      "description": "Detects AI-tool-spawned processes with suspicious network or file behavior",
+      "allowed_tasks": [
+        {
+          "name_prefix": "\\ClaudeMCP",
+          "command_contains": "C:\\TNY\\A02_TECH_DOCS\\Scripts_CMD_CLI\\Claude_SchTsk_Scripts\\"
+        }
+      ]
     },
     "clipboard_exfil": {
       "enabled": true,

@@ -14,16 +14,17 @@ attack surfaces McAfee doesn't know about.
 
 | Check | Severity | What it catches |
 |-------|----------|-----------------|
-| `mcp_package_integrity` | CRITICAL | Supply chain RAT attacks (axios-style), malicious npm postinstall hooks, suspicious MCP server packages |
-| `env_secrets_exposure` | CRITICAL | API keys in .env files, PowerShell history, Windows Registry, environment variables |
+| `mcp_package_integrity` | CRITICAL | Supply chain RAT attacks (axios-style), npm typosquats (e.g. `claud-code`, `cloude-code`), malicious postinstall hooks, MCP servers fetching unpinned packages |
+| `env_secrets_exposure` | CRITICAL | API keys and tokens (Anthropic, OpenAI, GitHub, npm, AWS, Google, Slack formats) in .env files, PowerShell history, Windows Registry, environment variables, plaintext `.npmrc` / `.git-credentials` |
 | `ollama_exposure` | HIGH | Ollama API reachable beyond this PC: bound to 0.0.0.0, `[::]` (IPv6 wildcard) or a LAN IP, or `OLLAMA_HOST` set to a non-loopback host in process/user/machine env |
 | `mcp_injection_exposure` | HIGH | High-privilege MCP servers (shell, registry, file-write) left ON — see [MCP injection exposure](#mcp-injection-exposure-expected-status-off) |
-| `claude_code_permissions` | HIGH | autoApprove mode, unrestricted Bash tool, admin-elevated sessions |
+| `claude_code_permissions` | HIGH | `bypassPermissions` mode, unrestricted or wildcard shell allow rules, project-level hooks / `apiKeyHelper` / auto-approved MCP servers, `ANTHROPIC_BASE_URL` redirection, outdated Claude Code, admin-elevated sessions |
 | `localhost_port_scan` | HIGH | ngrok tunnels, unexpected AI-spawned local services, 0.0.0.0 binding |
 | `network_beaconing` | HIGH | AI processes connecting to paste/tunnel sites (pastebin, ngrok, webhook.site) |
 | `suspicious_processes` | HIGH | Encoded PowerShell, persistence in scheduled tasks and registry Run keys |
 | `browser_extension_audit` | MEDIUM | Extensions with clipboard read, debugger, native messaging, or <all_urls> permissions |
 | `clipboard_exfil` | MEDIUM | Sensitive data (API keys, private keys, SSN, credit cards) in clipboard before pasting to AI |
+| `ollama_activity` | MEDIUM | Unexpected Ollama inference activity, VRAM anomalies while idle, outdated Ollama version |
 
 ---
 

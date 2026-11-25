@@ -82,6 +82,21 @@ def _get_ollama_version() -> str | None:
     return None
 
 
+# Oldest Ollama release without CVE-2026-7482 ("Bleeding Llama": unauthenticated heap
+# out-of-bounds read via /api/create, fixed in 0.17.1).
+MIN_SAFE_OLLAMA = (0, 17, 1)
+
+
+def _parse_semver(v: str | None) -> tuple | None:
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", v or "")
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def _below_security_floor(installed: str | None) -> bool:
+    parsed = _parse_semver(installed)
+    return bool(parsed) and parsed < MIN_SAFE_OLLAMA
+
+
 def _parse_recent_inference(log_path: Path, lookback_minutes: int) -> list[str]:
     """
     Scan the current Ollama server log for GIN inference POST lines
@@ -277,6 +292,11 @@ def run(config: dict) -> CheckResult:
 
     if installed_ver:
         details.append(f"Installed Ollama version: {installed_ver}")
+        if _below_security_floor(installed_ver):
+            issues.append(
+                f"Ollama {installed_ver} is older than {'.'.join(map(str, MIN_SAFE_OLLAMA))} "
+                f"and is affected by CVE-2026-7482 (memory disclosure via /api/create) - update now"
+            )
     if available_ver:
         details.append(f"Newer version available: {available_ver}")
         # Parse minor version distance — flag if 2+ minor versions behind

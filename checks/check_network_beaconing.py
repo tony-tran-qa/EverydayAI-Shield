@@ -34,6 +34,16 @@ SUSPICIOUS_DOMAINS = [
 ]
 
 
+def is_known_safe(hostname: str) -> bool:
+    """True if hostname is a known-safe domain or a subdomain of one.
+
+    Matching on a suffix boundary (not a substring) stops lookalikes such as
+    'anthropic.com.evil.net' or 'notgithub.com' from being treated as safe.
+    """
+    host = (hostname or "").lower().rstrip(".")
+    return any(host == safe or host.endswith("." + safe) for safe in KNOWN_SAFE_DOMAINS)
+
+
 def reverse_lookup(ip: str) -> str:
     try:
         return socket.gethostbyaddr(ip)[0]
@@ -147,7 +157,7 @@ def run(config: dict) -> CheckResult:
                 break
 
         # Check if it's a known-safe domain
-        is_safe = any(safe in hostname.lower() for safe in KNOWN_SAFE_DOMAINS)
+        is_safe = is_known_safe(hostname)
         if not is_safe and hostname != remote:
             # Unknown domain -- warn
             warnings.append(f"AI process {proc} connecting to unrecognized host: {hostname}")

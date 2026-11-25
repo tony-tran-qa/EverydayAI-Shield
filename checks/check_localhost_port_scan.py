@@ -126,6 +126,21 @@ def run(config: dict) -> CheckResult:
             details=[l.get("error", "") for l in listeners if "error" in l]
         )
 
+    # The same service often listens on both 0.0.0.0 and [::]; evaluate each (port, pid) once
+    seen = set()
+    unique = []
+    for listener in listeners:
+        key = (listener.get("port"), listener.get("pid"))
+        if "port" in listener and key in seen:
+            # keep the all-interfaces flag if either binding was exposed
+            for kept in unique:
+                if (kept.get("port"), kept.get("pid")) == key and listener.get("all_interfaces"):
+                    kept["all_interfaces"] = True
+            continue
+        seen.add(key)
+        unique.append(listener)
+    listeners = unique
+
     # Enrich with process names
     for listener in listeners:
         if "port" not in listener:
@@ -170,7 +185,7 @@ def run(config: dict) -> CheckResult:
         return CheckResult(
             check_id=check_id, status="FAIL", severity=severity,
             message=f"{len(issues)} suspicious local service(s) detected",
-            details=details,
+            details=details + [f"[!] {i}" for i in issues] + [f"[~] {w}" for w in warnings],
             remediation=(
                 "1. Kill unexpected processes: taskkill /PID <pid> /F\n"
                 "2. If ngrok: remove it and block port 4040 in Windows Firewall\n"
@@ -182,7 +197,7 @@ def run(config: dict) -> CheckResult:
         return CheckResult(
             check_id=check_id, status="WARN", severity=severity,
             message=f"{len(warnings)} port(s) worth reviewing",
-            details=details,
+            details=details + [f"[~] {w}" for w in warnings],
             remediation="Review flagged ports and confirm they are intentionally running"
         )
 

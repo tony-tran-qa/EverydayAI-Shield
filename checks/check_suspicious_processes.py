@@ -23,7 +23,22 @@ SAFE_SCHTASK_OWNERS = {
 }
 
 
-def check_scheduled_tasks() -> tuple[list[str], list[str]]:
+def is_allowed_task(task_name: str, task_cmd: str, allowed: list) -> bool:
+    """A task is allowed only when BOTH its name prefix and its command path match an entry
+    in config checks.suspicious_processes.allowed_tasks, e.g.
+    {"name_prefix": "\\\\MyBackup", "command_contains": "C:\\\\Scripts\\\\"}.
+    Requiring the command path stops a lookalike task name from hiding a malicious command."""
+    for entry in allowed or []:
+        if not isinstance(entry, dict):
+            continue
+        prefix = (entry.get("name_prefix") or "").lower()
+        needle = (entry.get("command_contains") or "").lower()
+        if prefix and needle and task_name.lower().startswith(prefix) and needle in task_cmd.lower():
+            return True
+    return False
+
+
+def check_scheduled_tasks(allowed_tasks=()) -> tuple[list[str], list[str]]:
     issues, details = [], []
     try:
         result = subprocess.run(
@@ -54,7 +69,9 @@ def check_scheduled_tasks() -> tuple[list[str], list[str]]:
                         if re.search(pat, task_cmd, re.IGNORECASE):
                             # Check if it's from a known-safe owner
                             owner_safe = any(s in task_name.lower() for s in SAFE_SCHTASK_OWNERS)
-                            if not owner_safe:
+                            if is_allowed_task(task_name, task_cmd, allowed_tasks):
+                                details.append(f"Allowed scheduled task (config): {task_name}")
+                            elif not owner_safe:
                                 issues.append(f"Suspicious scheduled task: '{task_name}' runs: {task_cmd[:80]}")
                             break
     except Exception as e:
@@ -97,18 +114,74 @@ def check_registry_run_keys() -> tuple[list[str], list[str]]:
     return issues, details
 
 
+# -EncodedCommand with any PowerShell abbreviation (-e, -ec, -enc ...) followed by a long
+# base64 blob. Requiring the blob avoids matching harmless flags such as "-Encoding UTF8".
+ENCODED_PS_PATTERN = re.compile(r"\s-(?:e|ec|en[a-z]*)\s+['\"]?[A-Za-z0-9+/=]{20,}", re.IGNORECASE)
+
+
+def find_encoded_commands(command_lines) -> list[str]:
+    """Return the command lines that carry an encoded PowerShell payload. Pure function."""
+    return [ln for ln in command_lines if ENCODED_PS_PATTERN.search(" " + ln)]
+
+
+# Content that makes a decoded payload suspicious: download cradles, in-memory execution,
+# hidden windows, policy/AMSI bypass. Many legitimate tools (MCP shell wrappers, installers)
+# also use -EncodedCommand, so the payload is decoded and judged instead of flagged blindly.
+SUSPICIOUS_PAYLOAD = re.compile(
+    r"downloadstring|downloadfile|downloaddata|net\.webclient|invoke-webrequest|\biwr\b|\bcurl\b|"
+    r"invoke-expression|\biex\b|frombase64string|start-bitstransfer|-w(?:indowstyle)?\s+hidden|"
+    r"amsi|bypass|reflection\.assembly|virtualalloc|https?://",
+    re.IGNORECASE,
+)
+
+
+def decode_encoded_command(line: str) -> str | None:
+    """Decode the base64 (UTF-16LE) payload of an -EncodedCommand line, or None if undecodable."""
+    import base64
+    m = re.search(r"\s-(?:e|ec|en[a-z]*)\s+['\"]?([A-Za-z0-9+/=]{20,})", " " + line, re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        return base64.b64decode(m.group(1) + "=" * (-len(m.group(1)) % 4)).decode("utf-16-le")
+    except Exception:
+        return None
+
+
+def classify_encoded_command(line: str) -> tuple[bool, str]:
+    """Return (suspicious, decoded_preview). Undecodable payloads count as suspicious."""
+    decoded = decode_encoded_command(line)
+    if decoded is None:
+        return True, "(could not decode)"
+    preview = " ".join(decoded.split())[:90]
+    return bool(SUSPICIOUS_PAYLOAD.search(decoded)), preview
+
+
+def get_powershell_command_lines() -> list[str]:
+    """Command lines of running powershell/pwsh processes.
+
+    Uses CIM through PowerShell: wmic.exe was removed from current Windows 11 builds,
+    so the old wmic call silently never worked there.
+    """
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe' OR Name='pwsh.exe'\" "
+         "| ForEach-Object { $_.CommandLine }"],
+        capture_output=True, text=True, timeout=20
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip()[:120] or f"exit code {result.returncode}")
+    return [ln for ln in result.stdout.splitlines() if ln.strip()]
+
+
 def check_encoded_powershell() -> tuple[list[str], list[str]]:
     issues, details = [], []
     try:
-        result = subprocess.run(
-            ["wmic", "process", "where",
-             "Name='powershell.exe'",
-             "get", "ProcessId,CommandLine", "/format:csv"],
-            capture_output=True, text=True, timeout=10
-        )
-        for line in result.stdout.splitlines():
-            if "-enc" in line.lower() or "-encodedcommand" in line.lower():
-                issues.append(f"Encoded PowerShell command running: {line[:100]}...")
+        for line in find_encoded_commands(get_powershell_command_lines()):
+            suspicious, preview = classify_encoded_command(line)
+            if suspicious:
+                issues.append(f"Suspicious encoded PowerShell command running, decoded: {preview}")
+            else:
+                details.append(f"Encoded PowerShell with benign-looking payload (tool wrapper?): {preview}")
     except Exception as e:
         details.append(f"PowerShell check error: {e}")
     return issues, details
@@ -120,8 +193,10 @@ def run(config: dict) -> CheckResult:
     all_issues = []
     all_details = []
 
+    allowed_tasks = config.get("checks", {}).get(check_id, {}).get("allowed_tasks", [])
+
     # Run sub-checks
-    for fn in [check_scheduled_tasks, check_registry_run_keys, check_encoded_powershell]:
+    for fn in [lambda: check_scheduled_tasks(allowed_tasks), check_registry_run_keys, check_encoded_powershell]:
         issues, details = fn()
         all_issues.extend(issues)
         all_details.extend(details)
