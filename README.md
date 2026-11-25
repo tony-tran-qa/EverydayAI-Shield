@@ -1,5 +1,7 @@
 # 🛡 EverydayAI-Shield — AI Tool Security Monitor
 
+[![CI](https://github.com/tony-tran-qa/everydayai-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/tony-tran-qa/everydayai-shield/actions/workflows/ci.yml)
+
 A modular Windows security tool that monitors your laptop for threats
 specific to AI tools: Claude, ChatGPT, MCP servers, Ollama, and Claude Code.
 
