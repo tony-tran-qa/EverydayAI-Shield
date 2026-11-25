@@ -7,7 +7,7 @@ pystray>=0.19.5
 Pillow>=10.0.0
 
 # Optional - enables Windows service mode
-pywin32>=306
+pywin32>=312
 
 # Dev / testing
 pytest>=8.0.0
