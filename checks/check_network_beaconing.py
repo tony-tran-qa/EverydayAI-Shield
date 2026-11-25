@@ -10,6 +10,7 @@ Red flags:
 
 import subprocess
 import re
+import ipaddress
 import socket
 from engine import CheckResult
 
@@ -34,14 +35,42 @@ SUSPICIOUS_DOMAINS = [
 ]
 
 
-def is_known_safe(hostname: str) -> bool:
+# Hosts whose live DNS answers identify the AI vendors' own IPs. A raw IP with no reverse
+# DNS is accepted only if it is one of these addresses (forward-confirmed, not guessed).
+SENTINEL_HOSTS = ["api.anthropic.com", "claude.ai", "api.openai.com", "chatgpt.com"]
+
+
+def is_known_safe(hostname: str, extra_domains=()) -> bool:
     """True if hostname is a known-safe domain or a subdomain of one.
 
     Matching on a suffix boundary (not a substring) stops lookalikes such as
     'anthropic.com.evil.net' or 'notgithub.com' from being treated as safe.
+    extra_domains lets config.json add trusted domains (same boundary matching).
     """
     host = (hostname or "").lower().rstrip(".")
-    return any(host == safe or host.endswith("." + safe) for safe in KNOWN_SAFE_DOMAINS)
+    safe_list = list(KNOWN_SAFE_DOMAINS) + [d.lower().rstrip(".") for d in extra_domains]
+    return any(host == safe or host.endswith("." + safe) for safe in safe_list)
+
+
+def _normalize_ip(value: str):
+    try:
+        return str(ipaddress.ip_address(value.split("%")[0]))
+    except ValueError:
+        return None
+
+
+def resolve_safe_ips() -> set:
+    """Current IP addresses (v4 and v6, normalized) of the sentinel vendor hosts."""
+    found = set()
+    for host in SENTINEL_HOSTS:
+        try:
+            for info in socket.getaddrinfo(host, 443):
+                ip = _normalize_ip(info[4][0])
+                if ip:
+                    found.add(ip)
+        except Exception:
+            continue
+    return found
 
 
 def reverse_lookup(ip: str) -> str:
@@ -118,6 +147,9 @@ def run(config: dict) -> CheckResult:
     issues = []
     warnings = []
 
+    extra_safe = config.get("known_safe_domains", [])
+    safe_ips = None  # resolved lazily, only if a raw-IP connection shows up
+
     connections = get_ai_connections(ai_processes)
 
     if any("error" in c for c in connections):
@@ -157,7 +189,13 @@ def run(config: dict) -> CheckResult:
                 break
 
         # Check if it's a known-safe domain
-        is_safe = is_known_safe(hostname)
+        is_safe = is_known_safe(hostname, extra_safe)
+        if not is_safe and hostname == remote:
+            if safe_ips is None:
+                safe_ips = resolve_safe_ips()
+            if _normalize_ip(remote) in safe_ips:
+                details.append(f"    [ok] {remote} is a current address of a known AI vendor host")
+                is_safe = True
         if not is_safe and hostname != remote:
             # Unknown domain -- warn
             warnings.append(f"AI process {proc} connecting to unrecognized host: {hostname}")

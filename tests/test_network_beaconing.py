@@ -143,3 +143,60 @@ def test_reverse_lookup_falls_back_to_ip(monkeypatch):
 
     monkeypatch.setattr(nb.socket, "gethostbyaddr", boom)
     assert nb.reverse_lookup("9.9.9.9") == "9.9.9.9"
+
+
+class TestRawIpAndExtraDomains:
+    def _conn(self, ip="2607:6bc0::10"):
+        return [{"process": "claude.exe", "pid": "1", "remote_ip": ip, "remote_port": 443}]
+
+    def test_raw_ip_of_vendor_host_is_accepted(self, monkeypatch):
+        monkeypatch.setattr(nb, "get_ai_connections", lambda procs: self._conn())
+        monkeypatch.setattr(nb, "reverse_lookup", lambda ip: ip)
+        monkeypatch.setattr(nb, "resolve_safe_ips", lambda: {"2607:6bc0::10"})
+        r = nb.run({})
+        assert r.status == "PASS"
+        assert any("known AI vendor host" in d for d in r.details)
+
+    def test_raw_ip_not_in_vendor_set_still_warns(self, monkeypatch):
+        monkeypatch.setattr(nb, "get_ai_connections", lambda procs: self._conn("203.0.113.9"))
+        monkeypatch.setattr(nb, "reverse_lookup", lambda ip: ip)
+        monkeypatch.setattr(nb, "resolve_safe_ips", lambda: {"2607:6bc0::10"})
+        assert nb.run({}).status == "WARN"
+
+    def test_ipv6_spelling_differences_still_match(self, monkeypatch):
+        monkeypatch.setattr(nb, "get_ai_connections", lambda procs: self._conn("2607:6BC0:0:0:0:0:0:10"))
+        monkeypatch.setattr(nb, "reverse_lookup", lambda ip: ip)
+        monkeypatch.setattr(nb, "resolve_safe_ips", lambda: {"2607:6bc0::10"})
+        assert nb.run({}).status == "PASS"
+
+    def test_vendor_ip_lookup_only_for_raw_ips(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(nb, "get_ai_connections", lambda procs: [
+            {"process": "claude.exe", "pid": "1", "remote_ip": "1.2.3.4", "remote_port": 443}])
+        monkeypatch.setattr(nb, "reverse_lookup", lambda ip: "api.anthropic.com")
+        monkeypatch.setattr(nb, "resolve_safe_ips", lambda: calls.append(1) or set())
+        assert nb.run({}).status == "PASS"
+        assert calls == []
+
+    def test_resolve_safe_ips_collects_and_normalizes(self, monkeypatch):
+        monkeypatch.setattr(nb.socket, "getaddrinfo", lambda host, port: [
+            (0, 0, 0, "", ("2607:6BC0:0:0:0:0:0:10", 443, 0, 0)), (0, 0, 0, "", ("160.79.104.10", 443))])
+        assert nb.resolve_safe_ips() == {"2607:6bc0::10", "160.79.104.10"}
+
+    def test_resolve_safe_ips_survives_dns_failure(self, monkeypatch):
+        def boom(*a, **k):
+            raise OSError("no dns")
+        monkeypatch.setattr(nb.socket, "getaddrinfo", boom)
+        assert nb.resolve_safe_ips() == set()
+
+    def test_extra_domains_from_config_are_honored(self, monkeypatch):
+        monkeypatch.setattr(nb, "get_ai_connections", lambda procs: [
+            {"process": "claude.exe", "pid": "1", "remote_ip": "54.1.1.1", "remote_port": 443}])
+        monkeypatch.setattr(nb, "reverse_lookup", lambda ip: "ip-54-1-1-1.stripe.com")
+        assert nb.run({}).status == "WARN"
+        assert nb.run({"known_safe_domains": ["stripe.com"]}).status == "PASS"
+
+    def test_extra_domains_still_use_boundary_matching(self):
+        assert nb.is_known_safe("ip-1.stripe.com", ["stripe.com"])
+        assert not nb.is_known_safe("stripe.com.evil.net", ["stripe.com"])
+        assert not nb.is_known_safe("notstripe.com", ["stripe.com"])
