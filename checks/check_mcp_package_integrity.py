@@ -14,10 +14,51 @@ Reference: Axios supply chain RAT attack against Claude MCP ecosystem (March 202
 
 import json
 import os
+import shutil
 import subprocess
 import re
 from pathlib import Path
 from engine import CheckResult
+
+# Typosquats of AI tooling published by the SANDWORM_MODE npm campaign (Socket, Feb 2026).
+# These are always checked, in addition to config.json "suspicious_npm_packages".
+KNOWN_TYPOSQUATS = ["claud-code", "cloude-code"]
+LAUNCHERS = ("npx", "uvx", "bunx", "pnpm dlx")
+
+
+def parse_pkg_spec(spec: str):
+    """'@scope/name@1.2.3' -> ('@scope/name', '1.2.3'); 'name' -> ('name', None)."""
+    spec = (spec or "").strip().strip("'\"")
+    idx = spec.rfind("@")
+    if idx > 0:
+        return spec[:idx].lower(), spec[idx + 1:] or None
+    return spec.lower(), None
+
+
+def launched_package(cmd: str, args: list):
+    """Package spec an npx/uvx-style MCP server fetches from a registry, or None."""
+    base = os.path.basename(str(cmd)).lower()
+    base = re.sub(r"\.(cmd|exe|bat)$", "", base)
+    if base not in ("npx", "uvx", "bunx"):
+        return None
+    for a in args or []:
+        if isinstance(a, str) and not a.startswith("-"):
+            return a
+    return None
+
+
+def is_pinned(spec: str) -> bool:
+    _, version = parse_pkg_spec(spec)
+    return bool(version) and version.lower() not in ("latest", "next", "*")
+
+
+def is_known_bad(spec: str, bad_names) -> str | None:
+    """Exact package-name match (version stripped) against known-bad names."""
+    name, _ = parse_pkg_spec(spec)
+    for bad in bad_names:
+        if name == bad.lower():
+            return bad
+    return None
 
 
 # Expand Windows env vars in paths
@@ -100,7 +141,8 @@ def run(config: dict) -> CheckResult:
     severity = config.get("checks", {}).get(check_id, {}).get("severity", "CRITICAL")
     details = []
     issues = []
-    suspicious_known = config.get("suspicious_npm_packages", [])
+    suspicious_known = list(dict.fromkeys(config.get("suspicious_npm_packages", []) + KNOWN_TYPOSQUATS))
+    unpinned = []
 
     # 1. Find MCP configs
     mcp_configs = get_mcp_configs(config)
@@ -122,28 +164,38 @@ def run(config: dict) -> CheckResult:
             args = cfg.get("args", [])
             details.append(f"  Server: {name} → {cmd} {' '.join(args)}")
 
-            # Check against known bad package list
-            for bad_pkg in suspicious_known:
-                if bad_pkg in cmd or any(bad_pkg in a for a in args):
-                    issues.append(f"Known suspicious package '{bad_pkg}' in MCP server '{name}'")
+            # Check against known bad package list (exact package name, version stripped)
+            tokens = [cmd] + [a for a in args if isinstance(a, str)]
+            for tok in tokens:
+                bad = is_known_bad(tok, suspicious_known)
+                if bad:
+                    issues.append(f"Known suspicious package '{bad}' in MCP server '{name}'")
+                    break
 
-            # Check if using uvx/npx from the internet without lockfile
-            if "npx" in cmd and "--yes" not in " ".join(args) and "-y" not in " ".join(args):
-                details.append(f"  [INFO] {name} uses npx without -y flag (will prompt, safer)")
+            # Registry-fetched servers without a pinned version can change under you
+            # (rug pull / compromised release). Pin with name@x.y.z.
+            spec = launched_package(cmd, args)
+            if spec and not is_pinned(spec):
+                unpinned.append(name)
+                details.append(f"  [WARN] {name} runs '{spec}' unpinned - any new release runs on next start")
 
     # 2. Check npm global packages for suspicious installs
     try:
+        # npm is npm.cmd on Windows; a bare "npm" raises FileNotFoundError without a shell
+        npm_exe = shutil.which("npm")
+        if not npm_exe:
+            raise FileNotFoundError("npm")
         result = subprocess.run(
-            ["npm", "list", "-g", "--depth=0", "--json"],
-            capture_output=True, text=True, timeout=15
+            [npm_exe, "list", "-g", "--depth=0", "--json"],
+            capture_output=True, text=True, timeout=30
         )
         if result.stdout:
             npm_data = json.loads(result.stdout)
             global_pkgs = npm_data.get("dependencies", {})
             for pkg_name in global_pkgs:
-                for bad_pkg in suspicious_known:
-                    if bad_pkg.lower() in pkg_name.lower():
-                        issues.append(f"Suspicious npm global package installed: {pkg_name}")
+                bad = is_known_bad(pkg_name, suspicious_known)
+                if bad:
+                    issues.append(f"Suspicious npm global package installed: {pkg_name}")
             details.append(f"Global npm packages checked: {len(global_pkgs)}")
     except FileNotFoundError:
         details.append("npm not found in PATH — skipping npm global check")
@@ -175,6 +227,14 @@ def run(config: dict) -> CheckResult:
                 "3. Prefer local paths over npx for production MCP servers\n"
                 "4. Review MCP server source on GitHub before installing"
             )
+        )
+
+    if unpinned:
+        return CheckResult(
+            check_id=check_id, status="WARN", severity=severity,
+            message=f"{len(unpinned)} MCP server(s) fetch unpinned packages: {', '.join(unpinned)}",
+            details=details,
+            remediation="Pin each registry-fetched MCP server to an exact version, e.g. npx -y @scope/server@1.2.3"
         )
 
     return CheckResult(
