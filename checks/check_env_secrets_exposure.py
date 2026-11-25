@@ -113,11 +113,19 @@ def run(config: dict) -> CheckResult:
 
     # 1. Scan current process environment variables
     exposed_env = []
+    placeholders = []
     for key, val in _environ().items():
         for pat in patterns:
             if pat.upper() in key.upper():
-                exposed_env.append((key, mask(val)))
+                # An unfilled template such as ${user_config.api_key} (Claude Desktop extensions
+                # pass these through literally when an optional setting is blank) is not a secret
+                if re.fullmatch(r"\$\{[A-Za-z0-9_.\-]+\}", val.strip()):
+                    placeholders.append((key, val.strip()))
+                else:
+                    exposed_env.append((key, mask(val)))
                 break
+    for k, v in placeholders:
+        details.append(f"ENV: {k} = unresolved template {v} (placeholder, not a credential)")
 
     if exposed_env:
         for k, v in exposed_env:

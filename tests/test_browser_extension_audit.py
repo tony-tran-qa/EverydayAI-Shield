@@ -157,3 +157,57 @@ class TestNameResolution:
 
     def test_no_version_dirs_returns_none(self, tmp_path):
         assert be.audit_extension(tmp_path, "Chrome", "Default") is None
+
+
+class TestDisabledExtensions:
+    """A switched-off extension is a cleanup warning, not a failure."""
+
+    @staticmethod
+    def _mark(chrome, ext_id, entry, fname="Secure Preferences"):
+        profile = chrome.root.parent
+        (profile / fname).write_text(json.dumps({"extensions": {"settings": {ext_id: entry}}}))
+
+    def _vpn(self, chrome):
+        chrome(name="Some VPN", permissions=["proxy", "management"], ext_id="vpn" + "a" * 29)
+        return "vpn" + "a" * 29
+
+    def test_enabled_high_risk_extension_still_fails(self, chrome):
+        self._vpn(chrome)
+        assert be.run(cfg()).status == "FAIL"
+
+    @pytest.mark.parametrize("entry", [{"disable_reasons": 1}, {"disable_reasons": [1]}, {"state": 0}])
+    def test_disabled_high_risk_extension_warns_not_fails(self, chrome, entry):
+        ext_id = self._vpn(chrome)
+        self._mark(chrome, ext_id, entry)
+        r = be.run(cfg())
+        assert r.status == "WARN"
+        assert any("[disabled]" in d for d in r.details)
+        assert any("switched off" in d for d in r.details)
+
+    def test_disabled_known_risky_name_still_fails(self, chrome):
+        chrome(name="Hola VPN", permissions=["proxy"], ext_id="bad" + "a" * 29)
+        self._mark(chrome, "bad" + "a" * 29, {"disable_reasons": 1})
+        assert be.run(cfg()).status == "FAIL"
+
+    def test_state_in_plain_preferences_also_read(self, chrome):
+        ext_id = self._vpn(chrome)
+        self._mark(chrome, ext_id, {"disable_reasons": 1}, fname="Preferences")
+        assert be.run(cfg()).status == "WARN"
+
+    def test_enabled_entry_with_no_reasons_is_not_disabled(self, chrome):
+        ext_id = self._vpn(chrome)
+        self._mark(chrome, ext_id, {"state": 1, "disable_reasons": 0})
+        assert be.run(cfg()).status == "FAIL"
+
+    def test_corrupt_preferences_do_not_hide_findings(self, chrome):
+        self._vpn(chrome)
+        (chrome.root.parent / "Secure Preferences").write_text("{not json")
+        assert be.run(cfg()).status == "FAIL"
+
+    def test_disabled_extension_ids_helper(self, tmp_path):
+        (tmp_path / "Secure Preferences").write_text(json.dumps({"extensions": {"settings": {
+            "off1": {"disable_reasons": 1}, "on1": {"state": 1}, "off2": {"state": 0}, "junk": 5}}}))
+        assert be.disabled_extension_ids(tmp_path) == {"off1", "off2"}
+
+    def test_missing_preferences_files_give_empty_set(self, tmp_path):
+        assert be.disabled_extension_ids(tmp_path) == set()

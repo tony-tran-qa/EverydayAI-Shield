@@ -98,6 +98,28 @@ def resolve_msg_name(version_dir: Path, msg_key: str) -> str:
     return ""
 
 
+def disabled_extension_ids(profile_dir: Path) -> set:
+    """IDs of extensions the browser has switched off (user toggle or policy).
+
+    Chrome/Edge keep per-extension state in 'Secure Preferences' (and older builds in
+    'Preferences'); a non-empty disable_reasons or state 0 means the extension is off.
+    """
+    disabled = set()
+    for fname in ("Secure Preferences", "Preferences"):
+        try:
+            with open(profile_dir / fname, "r", encoding="utf-8", errors="ignore") as f:
+                settings = json.load(f).get("extensions", {}).get("settings", {})
+        except Exception:
+            continue
+        for ext_id, entry in settings.items():
+            if not isinstance(entry, dict):
+                continue
+            reasons = entry.get("disable_reasons")
+            if reasons or entry.get("state") == 0:
+                disabled.add(ext_id)
+    return disabled
+
+
 def audit_extension(ext_path: Path, browser: str, profile: str) -> dict | None:
     """Parse the manifest.json for the latest version of an extension."""
     version_dirs = [d for d in ext_path.iterdir() if d.is_dir()]
@@ -155,6 +177,7 @@ def run(config: dict) -> CheckResult:
     total_extensions = 0
     for browser, profile, ext_root in ext_dirs:
         details.append(f"Scanning: {browser}/{profile}")
+        disabled_ids = disabled_extension_ids(ext_root.parent)
         for ext_id_dir in ext_root.iterdir():
             if not ext_id_dir.is_dir():
                 continue
@@ -185,9 +208,21 @@ def run(config: dict) -> CheckResult:
                     elevated_found.append("<all_urls>")
 
             # Check against known risky extension names
+            known_risky = False
             for bad in KNOWN_RISKY_EXTENSIONS:
                 if bad.lower() in name.lower():
+                    known_risky = True
                     issues.append(f"Known risky extension: '{name}' ({browser}/{profile})")
+
+            # A switched-off extension cannot act, so its permissions are a warning to clean
+            # up, not a failure. Known-risky names still fail; the user can re-enable it.
+            if info["id"] in disabled_ids and not known_risky and (high_found or len(elevated_found) >= 3):
+                details.append(f"  [disabled] {name}")
+                warnings.append(
+                    f"'{name}' is installed but switched off ({browser}/{profile}); it still holds "
+                    f"{len(high_found) + len(elevated_found)} notable permission(s). Remove it if unused"
+                )
+                continue
 
             if high_found:
                 issues.append(f"'{name}' -- {len(high_found)} high-risk permission(s):")

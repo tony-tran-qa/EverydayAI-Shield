@@ -178,3 +178,37 @@ class TestRun:
 
         monkeypatch.setattr(es.subprocess, "run", lambda *a, **k: R())
         assert es.run(CONFIG).status == "FAIL"
+
+
+class TestUnresolvedTemplatePlaceholders:
+    """${...} values are unfilled templates (e.g. Claude Desktop extension settings), not secrets."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(es.Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+        class R:
+            returncode = 1
+            stdout = ""
+            stderr = ""
+        monkeypatch.setattr(es.subprocess, "run", lambda *a, **k: R())
+
+    def test_unresolved_placeholder_is_not_flagged(self, monkeypatch):
+        monkeypatch.setattr(es, "_environ", lambda: {"API_KEY": "${user_config.api_key}"})
+        r = es.run(CONFIG)
+        assert r.status == "PASS"
+        assert any("unresolved template" in d for d in r.details)
+
+    def test_placeholder_detail_does_not_claim_exposure(self, monkeypatch):
+        monkeypatch.setattr(es, "_environ", lambda: {"API_KEY": "${user_config.api_key}"})
+        r = es.run(CONFIG)
+        assert not any("API credential in environment" in d for d in r.details)
+
+    def test_real_value_still_flagged(self, monkeypatch):
+        monkeypatch.setattr(es, "_environ", lambda: {"API_KEY": "sk-real-looking-value-1234567890"})
+        assert es.run(CONFIG).status == "WARN"
+
+    def test_partial_template_with_real_text_still_flagged(self, monkeypatch):
+        monkeypatch.setattr(es, "_environ", lambda: {"API_KEY": "prefix-${x}-realsecretvalue99"})
+        assert es.run(CONFIG).status == "WARN"
