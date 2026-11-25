@@ -20,6 +20,8 @@ KNOWN_SAFE_DOMAINS = [
     "registry.npmjs.org", "pypi.org", "raw.githubusercontent.com",
     "api.anthropic.com", "api.openai.com", "sentry.io",
     "microsoft.com", "windows.com", "windowsupdate.com",
+    "amazonaws.com", "compute-1.amazonaws.com",
+    "googleusercontent.com", "ollama.com",
     "localhost", "127.0.0.1", "::1",
 ]
 
@@ -135,7 +137,7 @@ def run(config: dict) -> CheckResult:
         hostname = reverse_lookup(remote)
         conn["remote_host"] = hostname
 
-        conn_str = f"{proc} (PID {conn['pid']}) → {hostname} [{remote}]:{port}"
+        conn_str = f"{proc} (PID {conn['pid']}) -> {hostname} [{remote}]:{port}"
         details.append(f"  {conn_str}")
 
         # Check against suspicious domain list
@@ -147,17 +149,17 @@ def run(config: dict) -> CheckResult:
         # Check if it's a known-safe domain
         is_safe = any(safe in hostname.lower() for safe in KNOWN_SAFE_DOMAINS)
         if not is_safe and hostname != remote:
-            # Unknown domain — warn
+            # Unknown domain -- warn
             warnings.append(f"AI process {proc} connecting to unrecognized host: {hostname}")
         elif not is_safe and hostname == remote:
-            # Raw IP — worth noting
+            # Raw IP -- worth noting
             warnings.append(f"AI process {proc} connecting to raw IP {remote}:{port} (no domain)")
 
     if issues:
         return CheckResult(
             check_id=check_id, status="FAIL", severity=severity,
             message=f"Suspicious outbound connection(s) from AI processes: {len(issues)} detected",
-            details=details + [f"⚠ {i}" for i in issues],
+            details=details + [f"[!] {i}" for i in issues],
             remediation=(
                 "1. Identify the process: tasklist /FI \"PID eq <pid>\"\n"
                 "2. Kill if unauthorized: taskkill /PID <pid> /F\n"
@@ -170,8 +172,8 @@ def run(config: dict) -> CheckResult:
         return CheckResult(
             check_id=check_id, status="WARN", severity=severity,
             message=f"AI processes have connections to {len(warnings)} unrecognized host(s)",
-            details=details + [f"⚡ {w}" for w in warnings],
-            remediation="Review unrecognized connections — they may be legitimate CDNs or telemetry endpoints"
+            details=details + [f"[~] {w}" for w in warnings],
+            remediation="Review unrecognized connections -- they may be legitimate CDNs or telemetry endpoints"
         )
 
     return CheckResult(
@@ -179,3 +181,4 @@ def run(config: dict) -> CheckResult:
         message=f"AI process network connections look normal ({len(ai_conns)} conn(s))",
         details=details
     )
+

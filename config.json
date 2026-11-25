@@ -33,7 +33,15 @@
     "browser_extension_audit": {
       "enabled": true,
       "severity": "MEDIUM",
-      "description": "Audits Chrome/Edge extensions for AI-adjacent risky permissions"
+      "description": "Audits Chrome/Edge extensions for AI-adjacent risky permissions",
+      "whitelist": [
+        "Claude",
+        "BlazeMeter | The Continuous Testing Platform",
+        "JMeter Script Generator",
+        "Adobe Acrobat: PDF edit, convert, sign tools",
+        "McAfee WebAdvisor",
+        "ResumeGPT : AI Job Autofill & Best Resume"
+      ]
     },
     "localhost_port_scan": {
       "enabled": true,
@@ -50,19 +58,60 @@
       "severity": "HIGH",
       "description": "Detects unusual outbound connections from AI tool processes"
     },
+    "ollama_activity": {
+      "enabled": true,
+      "severity": "MEDIUM",
+      "description": "Monitors Ollama for unexpected inference activity, VRAM anomalies, and version currency",
+      "lookback_minutes": 30,
+      "vram_idle_threshold_mib": 500
+    },
     "mcp_injection_exposure": {
       "enabled": true,
       "severity": "HIGH",
       "description": "Expects high-privilege MCP servers (shell/registry/filesystem) to be OFF - when on, prompt injection in content Claude reads can act on this PC",
-      "high_privilege_patterns": ["windows-mcp", "windows_mcp", "filesystem", "desktop-commander", "desktop_commander", "powershell", "shell", "terminal"],
+      "high_privilege_patterns": [
+        "windows-mcp",
+        "windows_mcp",
+        "filesystem",
+        "desktop-commander",
+        "desktop_commander",
+        "powershell",
+        "shell",
+        "terminal"
+      ],
       "extension_settings_dir": "%APPDATA%\\Claude\\Claude Extensions Settings",
       "claude_code_config": "%USERPROFILE%\\.claude.json",
       "claude_code_settings": "%USERPROFILE%\\.claude\\settings.json"
     }
   },
-  "known_safe_ports": [11434, 3000, 8080, 8443, 443, 80],
-  "known_ai_processes": ["ollama", "claude", "node", "python", "uvx", "npx"],
-  "sensitive_env_patterns": ["API_KEY", "SECRET", "TOKEN", "PASSWORD", "ANTHROPIC", "OPENAI", "GEMINI"],
+  "known_safe_ports": [
+    11434,
+    3000,
+    8080,
+    8443,
+    443,
+    80,
+    52804,
+    9080,
+    62325
+  ],
+  "known_ai_processes": [
+    "ollama",
+    "claude",
+    "node",
+    "python",
+    "uvx",
+    "npx"
+  ],
+  "sensitive_env_patterns": [
+    "API_KEY",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "ANTHROPIC",
+    "OPENAI",
+    "GEMINI"
+  ],
   "mcp_paths": [
     "%APPDATA%\\Claude\\claude_desktop_config.json",
     "%USERPROFILE%\\.cursor\\mcp.json",
@@ -80,5 +129,9 @@
     "ngrok.io",
     "serveo.net",
     "localhost.run"
+  ],
+  "known_safe_processes": [
+    "SmartConnect.exe",
+    "NahimicService.exe"
   ]
 }
