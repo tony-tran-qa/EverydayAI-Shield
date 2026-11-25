@@ -95,6 +95,91 @@ def get_listening_ports() -> list[dict]:
     return listeners
 
 
+# Vendor-documented ports (preferred rule). A listener is accepted only when BOTH the
+# port is in the vendor's documented range AND the owning process is that vendor's binary.
+# Extend or override with config["vendor_port_rules"] (same shape).
+DEFAULT_VENDOR_PORT_RULES = [
+    {
+        "vendor": "JetBrains IDE",
+        "processes": ["pycharm64.exe", "idea64.exe", "webstorm64.exe", "phpstorm64.exe"],
+        # 63342 = built-in web server default, next free port used when busy (range width assumed);
+        # 6942-6991 = IDE inter-process communication (50 ports)
+        "ports": [[63342, 63351], [6942, 6991]],
+        "source": "JetBrains IntelliJ Support: 'Internal/Local ports 63342, 6942'",
+    },
+]
+
+
+def get_process_path(pid: str):
+    """Full path of the process binary, or None when it cannot be read."""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue).Path"],
+            capture_output=True, text=True, timeout=10,
+        )
+        path = r.stdout.strip()
+        return path or None
+    except Exception:
+        return None
+
+
+def get_signer(path: str):
+    """(status, subject) of the Authenticode signature, or (None, None) on failure."""
+    try:
+        safe = path.replace("'", "''")
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"$s=Get-AuthenticodeSignature -LiteralPath '{safe}'; "
+             "\"$($s.Status)|$($s.SignerCertificate.Subject)\""],
+            capture_output=True, text=True, timeout=15,
+        )
+        status, _, subject = r.stdout.strip().partition("|")
+        return (status or None), (subject or None)
+    except Exception:
+        return None, None
+
+
+def _in_ranges(port: int, ranges) -> bool:
+    return any(lo <= port <= hi for lo, hi in ranges)
+
+
+def classify_listener(port, proc, pid, vendor_rules, allowed_processes,
+                      path_fn=None, signer_fn=None):
+    """Decide whether a listener is accounted for.
+
+    Returns (verdict, note): verdict is "documented" (vendor port + vendor process),
+    "process-rule" (name + path + signature verified), "unverified" (name matches an
+    allowed process but its path or signature could not be verified), or None.
+    """
+    path_fn = path_fn or get_process_path
+    signer_fn = signer_fn or get_signer
+    pname = (proc or "").lower()
+
+    # 1. Preferred: vendor-documented port AND vendor process
+    for rule in vendor_rules:
+        if pname in [x.lower() for x in rule.get("processes", [])] and _in_ranges(port, rule.get("ports", [])):
+            return "documented", f"{rule['vendor']} documented port {port} ({proc}); source: {rule.get('source', 'vendor docs')}"
+
+    # 2. Fallback: identify the binary itself (for dynamic ports)
+    for rule in allowed_processes:
+        if pname != rule.get("name", "").lower():
+            continue
+        path = path_fn(pid)
+        if not path:
+            return "unverified", f"{proc} matches an allowed process but its path could not be read (run elevated to verify)"
+        needle = rule.get("path_contains")
+        if needle and needle.lower() not in path.lower():
+            continue
+        signer_needle = rule.get("signer_contains")
+        if signer_needle:
+            status, subject = signer_fn(path)
+            if status != "Valid" or not subject or signer_needle.lower() not in subject.lower():
+                continue
+        return "process-rule", f"{proc} verified by process rule (path {path})"
+    return None, ""
+
+
 def get_process_name(pid: str) -> str:
     try:
         result = subprocess.run(
@@ -113,6 +198,8 @@ def run(config: dict) -> CheckResult:
     check_id = "localhost_port_scan"
     severity = config.get("checks", {}).get(check_id, {}).get("severity", "HIGH")
     safe_ports = set(config.get("known_safe_ports", [])) | DEFAULT_SAFE_PORTS
+    vendor_rules = DEFAULT_VENDOR_PORT_RULES + list(config.get("vendor_port_rules", []))
+    allowed_processes = list(config.get("allowed_processes", []))
     details = []
     issues = []
     warnings = []
@@ -160,7 +247,23 @@ def run(config: dict) -> CheckResult:
 
         # Bound to all interfaces on unexpected port — skip system processes
         is_system_proc = any(s.lower() in proc.lower() for s in WINDOWS_SYSTEM_PROCS)
-        if listener.get("all_interfaces") and port not in safe_ports and port > 1024 and not is_system_proc:
+
+        # Vendor-documented port first, then process identity (only evaluated when it matters)
+        verdict = None
+        needs_review = (
+            port not in safe_ports and not is_system_proc
+            and ((listener.get("all_interfaces") and port > 1024) or port > 49152)
+        )
+        if needs_review:
+            verdict, note = classify_listener(port, proc, pid, vendor_rules, allowed_processes)
+            if verdict in ("documented", "process-rule"):
+                details.append(f"[ok] {note}")
+            elif verdict == "unverified":
+                warnings.append(note)
+        accounted_for = verdict in ("documented", "process-rule", "unverified")
+
+        if (listener.get("all_interfaces") and port not in safe_ports and port > 1024
+                and not is_system_proc and not accounted_for):
             issues.append(
                 f"Service on port {port} ({proc}) bound to 0.0.0.0 — network-accessible"
             )
@@ -176,7 +279,7 @@ def run(config: dict) -> CheckResult:
             is_system_proc = any(
                 s.lower() in proc.lower() for s in WINDOWS_SYSTEM_PROCS
             )
-            if not is_system_proc:
+            if not is_system_proc and not accounted_for:
                 warnings.append(f"Ephemeral-range listener on {port} ({proc}) — review if unexpected")
 
     details.insert(0, f"Total localhost listeners: {len(listeners)}")

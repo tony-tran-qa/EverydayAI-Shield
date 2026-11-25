@@ -90,6 +90,10 @@
       "claude_code_settings": "%USERPROFILE%\\.claude\\settings.json"
     }
   },
+  "allowed_processes": [
+    { "name": "pycharm64.exe", "path_contains": "JetBrains", "signer_contains": "JetBrains" },
+    { "name": "jhi_service.exe", "path_contains": "DriverStore", "signer_contains": "Microsoft Windows Hardware Compatibility Publisher" }
+  ],
   "known_safe_ports": [
     11434,
     3000,
